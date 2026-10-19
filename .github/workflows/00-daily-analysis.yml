@@ -29,7 +29,53 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # ============ 二期: Sequoia-X 技术面预筛选 (2026-10-19 新增) ============
+  # 每天先用 6 个技术形态策略(均线金叉/海龟突破/旗形/涨停洗盘/上升趋势阴线/RPS)
+  # 从 212 只名单里筛出技术走强的子集,再交给 analyze 做 LLM 深度分析。
+  # 数据源: Tushare(baostock 海外被墙);筛选失败时自动回退到全量名单。
+  screen:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      stock_list: ${{ steps.run-screen.outputs.stock_list }}
+      screened_count: ${{ steps.run-screen.outputs.screened_count }}
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v5
+
+      - name: 设置 Python 环境
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: 克隆 Sequoia-X
+        run: git clone --depth 1 https://github.com/sngyai/Sequoia-X /tmp/sequoia-x
+
+      - name: 安装筛选依赖
+        run: pip install -r .github/sequoia/requirements.txt
+
+      - name: 运行技术筛选
+        id: run-screen
+        env:
+          TZ: Asia/Shanghai
+          TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }}
+        run: |
+          python .github/sequoia/screen.py \
+            --universe "${{ vars.STOCK_LIST || secrets.STOCK_LIST }}" \
+            --db /tmp/sequoia_v2.db \
+            --sequoia-dir /tmp/sequoia-x \
+            --output /tmp/picks.json
+          echo "screened_count=$(python -c "import json;print(json.load(open('/tmp/picks.json'))['union_count'])")" >> $GITHUB_OUTPUT
+          echo "stock_list=$(python -c "import json;print(','.join(json.load(open('/tmp/picks.json'))['union']))")" >> $GITHUB_OUTPUT
+
+      - name: 上传筛选结果
+        uses: actions/upload-artifact@v6
+        with:
+          name: sequoia-picks
+          path: /tmp/picks.json
+
   analyze:
+    needs: screen
     runs-on: ubuntu-latest
     # 兼容误将 STOCK_LIST 配到同名 Environment variables 的场景；
     # 推荐位置仍是 Settings -> Secrets and variables -> Actions -> Repository variables。
@@ -424,6 +470,8 @@ jobs:
           # ==========================================
           # 避免直接写入 STOCK_LIST，保留同名 Environment variables 的 runner 环境值。
           STOCK_LIST_CONFIG: ${{ vars.STOCK_LIST || secrets.STOCK_LIST }}
+          # 二期技术筛选名单(screen job 输出;为空时自动回退到 STOCK_LIST_CONFIG)
+          SCREENED_LIST: ${{ needs.screen.outputs.stock_list }}
           MARKET_REVIEW_REGION: ${{ vars.MARKET_REVIEW_REGION || secrets.MARKET_REVIEW_REGION || 'cn' }}
           MARKET_REVIEW_COLOR_SCHEME: ${{ vars.MARKET_REVIEW_COLOR_SCHEME || secrets.MARKET_REVIEW_COLOR_SCHEME || 'green_up' }}
           
@@ -455,8 +503,12 @@ jobs:
           # 1. Repository/Environment secrets 或 Repository variables（STOCK_LIST_CONFIG）
           # 2. 同名 Environment variables 注入的 runner 环境变量（STOCK_LIST）
           # 3. 最小默认值
-          if [ -n "${STOCK_LIST_CONFIG:-}" ]; then
+          if [ -n "${SCREENED_LIST:-}" ]; then
+            export STOCK_LIST="$SCREENED_LIST"
+            echo "🎯 二期技术筛选命中 ${{ needs.screen.outputs.screened_count }} 只"
+          elif [ -n "${STOCK_LIST_CONFIG:-}" ]; then
             export STOCK_LIST="$STOCK_LIST_CONFIG"
+            echo "⚠️ 技术筛选无结果,回退到全量名单"
           elif [ -z "${STOCK_LIST:-}" ]; then
             export STOCK_LIST="600519"
           fi
@@ -588,3 +640,4 @@ jobs:
             echo "📜 最近日志（最后 30 行）:"
             tail -30 logs/stock_analysis_*.log 2>/dev/null || echo "无日志"
           fi
+
