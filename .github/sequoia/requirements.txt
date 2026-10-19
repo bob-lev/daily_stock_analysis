@@ -1,0 +1,8 @@
+# Sequoia-X pre-screening (phase 2) dependencies.
+# Installed in the `screen` job of 00-daily-analysis.yml.
+tushare>=1.4
+pandas>=2.0
+baostock>=0.9          # only for import compatibility; network blocked overseas,
+                       # turtle strategy degrades gracefully (no market-cap sort)
+pydantic-settings>=2.0 # sequoia_x.core.config.Settings
+rich>=13.0             # sequoia_x.core.logger (RichHandler)
